@@ -2,5 +2,5 @@
   "framework": "nextjs",
   "buildCommand": "npm run build",
   "devCommand": "npm run dev",
-  "installCommand": "npm install -g pnpm@10 && pnpm install --no-frozen-lockfile"
+  "installCommand": "npm install -g pnpm@9 && pnpm install --no-frozen-lockfile"
 }
