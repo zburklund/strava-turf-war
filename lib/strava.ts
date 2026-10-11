@@ -1,4 +1,4 @@
-import { createServiceClient } from '@/lib/supabase/service'
+import { db } from '@/lib/db'
 
 export interface StravaActivity {
   id: number
@@ -55,18 +55,18 @@ export async function exchangeStravaCode(
 
 /**
  * Refresh a user's Strava access token if it has expired.
- * Updates the user row in Supabase and returns a fresh access token.
+ * Updates the user row in the database and returns a fresh access token.
  */
 export async function refreshStravaToken(userId: string): Promise<string> {
-  const supabase = createServiceClient()
+  const sql = db()
 
-  const { data: user, error } = await supabase
-    .from('users')
-    .select('access_token, refresh_token, token_expires_at')
-    .eq('id', userId)
-    .single()
+  const [user] = await sql`
+    select access_token, refresh_token, token_expires_at
+    from users
+    where id = ${userId}
+  `
 
-  if (error || !user) {
+  if (!user) {
     throw new Error(`User not found: ${userId}`)
   }
 
@@ -100,14 +100,13 @@ export async function refreshStravaToken(userId: string): Promise<string> {
   const tokens: StravaTokenResponse = await res.json()
 
   // Persist refreshed tokens
-  await supabase
-    .from('users')
-    .update({
-      access_token: tokens.access_token,
-      refresh_token: tokens.refresh_token,
-      token_expires_at: new Date(tokens.expires_at * 1000).toISOString(),
-    })
-    .eq('id', userId)
+  await sql`
+    update users set
+      access_token     = ${tokens.access_token},
+      refresh_token    = ${tokens.refresh_token},
+      token_expires_at = ${new Date(tokens.expires_at * 1000).toISOString()}
+    where id = ${userId}
+  `
 
   return tokens.access_token
 }

@@ -1,6 +1,6 @@
 import { cookies } from 'next/headers'
 import { redirect } from 'next/navigation'
-import { createServiceClient } from '@/lib/supabase/service'
+import { db } from '@/lib/db'
 import MapClient from './MapClient'
 
 interface TerritoryRow {
@@ -20,20 +20,19 @@ export default async function MapPage() {
   }
 
   // Server-side fetch of all territories for SSR
-  const supabase = createServiceClient()
-  const { data: rows } = await supabase
-    .from('territories')
-    .select(`
-      id,
-      polygon,
-      area_sqm,
-      captured_at,
-      users (
-        id,
-        display_name,
-        color
-      )
-    `)
+  const sql = db()
+  const rows = await sql`
+    select
+      t.id,
+      ST_AsGeoJSON(t.polygon)::json as polygon,
+      t.area_sqm,
+      to_json(t.captured_at)        as captured_at,
+      case when u.id is null then null
+           else json_build_object('id', u.id, 'display_name', u.display_name, 'color', u.color)
+      end                           as users
+    from territories t
+    left join users u on u.id = t.user_id
+  `
 
   const features = ((rows ?? []) as unknown as TerritoryRow[])
     .map((row) => {
@@ -69,11 +68,13 @@ export default async function MapPage() {
   }
 
   // Fetch current user info for the UI
-  const { data: currentUser } = await supabase
-    .from('users')
-    .select('id, display_name, color, profile_image_url')
-    .eq('id', userId)
-    .single()
+  // Compare as text so a malformed cookie finds no user instead of raising
+  // a uuid cast error.
+  const [currentUser] = await sql`
+    select id, display_name, color, profile_image_url
+    from users
+    where id::text = ${userId}
+  `
 
   return (
     <main className="h-screen w-screen overflow-hidden flex flex-col">

@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { cookies } from 'next/headers'
-import { createServiceClient } from '@/lib/supabase/service'
+import { db } from '@/lib/db'
 import {
   exchangeStravaCode,
   getStravaAthlete,
@@ -11,7 +11,7 @@ import {
  * Handles the OAuth callback from Strava:
  *  1. Exchange the code for tokens
  *  2. Fetch the athlete profile
- *  3. Upsert the user in Supabase
+ *  3. Upsert the user in the database
  *  4. Set a session cookie
  *  5. Redirect to /map
  */
@@ -34,24 +34,36 @@ export async function GET(request: NextRequest) {
     // calling /athlete gives us the complete object)
     const athlete = await getStravaAthlete(tokens.access_token)
 
-    // Upsert user in Supabase
-    const supabase = createServiceClient()
-    const { data: user, error: upsertError } = await supabase
-      .from('users')
-      .upsert(
-        {
-          strava_athlete_id: athlete.id,
-          username: athlete.username ?? null,
-          display_name: `${athlete.firstname} ${athlete.lastname}`.trim(),
-          profile_image_url: athlete.profile ?? null,
-          access_token: tokens.access_token,
-          refresh_token: tokens.refresh_token,
-          token_expires_at: new Date(tokens.expires_at * 1000).toISOString(),
-        },
-        { onConflict: 'strava_athlete_id' }
-      )
-      .select('id')
-      .single()
+    // Upsert user in the database
+    const sql = db()
+    let user: { id: string } | undefined
+    let upsertError: unknown
+    try {
+      ;[user] = (await sql`
+        insert into users (
+          strava_athlete_id, username, display_name, profile_image_url,
+          access_token, refresh_token, token_expires_at
+        ) values (
+          ${athlete.id},
+          ${athlete.username ?? null},
+          ${`${athlete.firstname} ${athlete.lastname}`.trim()},
+          ${athlete.profile ?? null},
+          ${tokens.access_token},
+          ${tokens.refresh_token},
+          ${new Date(tokens.expires_at * 1000).toISOString()}
+        )
+        on conflict (strava_athlete_id) do update set
+          username          = excluded.username,
+          display_name      = excluded.display_name,
+          profile_image_url = excluded.profile_image_url,
+          access_token      = excluded.access_token,
+          refresh_token     = excluded.refresh_token,
+          token_expires_at  = excluded.token_expires_at
+        returning id
+      `) as { id: string }[]
+    } catch (err) {
+      upsertError = err
+    }
 
     if (upsertError || !user) {
       console.error('Failed to upsert user:', upsertError)

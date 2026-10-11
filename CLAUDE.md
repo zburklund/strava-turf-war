@@ -5,7 +5,7 @@ A multiplayer territory-control game built on Strava activity data. When a user 
 ## Tech stack
 
 - **Next.js 16** (App Router, TypeScript, Turbopack)
-- **Supabase** (Postgres + PostGIS) — geospatial territory storage
+- **Neon** (serverless Postgres + PostGIS) — geospatial territory storage, queried with `@neondatabase/serverless`
 - **MapLibre GL** — free tile map, no API key required
 - **Turf.js** (`@turf/turf`) — polygon math (polygonize, kinks, intersect, area)
 - **Strava OAuth + Webhooks** — authentication and automatic ride ingestion
@@ -32,15 +32,10 @@ app/
 lib/
   territory.ts                    # Core polygon algorithm + WKT helpers
   strava.ts                       # Token exchange, token refresh, activity fetch
-  supabase/
-    client.ts                     # Browser client (createBrowserClient)
-    server.ts                     # Server client (createServerClient, reads cookies)
-    service.ts                    # Service-role client (bypasses RLS — webhooks only)
+  db.ts                           # Neon SQL client (db() → tagged-template sql) — server only
 
-supabase/migrations/
-  001_initial.sql                 # PostGIS schema: users, rides, territories + RLS + spatial indexes
-  002_territories_geojson.sql     # RPC: get_territories_geojson() — returns FeatureCollection
-  003_intersecting_territories.sql # RPC: get_intersecting_territories(wkt) — spatial query
+db/
+  schema.sql                      # PostGIS schema: users, rides, territories + spatial indexes
 
 types/
   mapbox__polyline.d.ts           # Hand-written type declarations for @mapbox/polyline
@@ -48,9 +43,9 @@ types/
 
 ## Authentication
 
-No Supabase Auth — custom OAuth flow using Strava directly. Session is stored as a plain `strava_turf_user_id` cookie containing the Supabase user UUID. The cookie is `httpOnly`, `sameSite: lax`, 30-day expiry.
+Custom OAuth flow using Strava directly. Session is stored as a plain `strava_turf_user_id` cookie containing the `users.id` UUID. The cookie is `httpOnly`, `sameSite: lax`, 30-day expiry.
 
-The service-role Supabase client bypasses RLS and is used exclusively in API routes that need to write (webhook handler, OAuth callback). Never import `lib/supabase/service.ts` in client components.
+`lib/db.ts` connects as the database owner — there is no RLS. Import it only from server code (API routes, server components); never from client components.
 
 ## Territory algorithm (`lib/territory.ts`)
 
@@ -84,7 +79,7 @@ Territory stealing uses `findStolenTerritories()`: for each existing territory, 
 - `territories.polygon` is `geometry(Polygon, 4326)` — PostGIS type, SRID 4326 (WGS84).
 - `territories.area_sqm` is a generated column: `ST_Area(polygon::geography)` — uses geography cast for accurate metre-based area.
 - Insert polygons as WKT with SRID prefix: `SRID=4326;POLYGON((...))`.
-- Supabase returns PostGIS geometry columns as GeoJSON objects (not strings) in select queries.
+- Select geometry as `ST_AsGeoJSON(col)::json` — the driver then returns a GeoJSON object. A bare geometry column comes back as hex EWKB.
 - Spatial index on `territories(polygon)` and `rides(route)` using GiST.
 
 ## MapLibre GL map (`app/map/MapClient.tsx`)
@@ -101,9 +96,7 @@ Territory stealing uses `findStolenTerritories()`: for each existing territory, 
 
 | Variable | Description |
 |---|---|
-| `NEXT_PUBLIC_SUPABASE_URL` | Supabase project URL |
-| `NEXT_PUBLIC_SUPABASE_ANON_KEY` | Supabase anon/public key |
-| `SUPABASE_SERVICE_ROLE_KEY` | Supabase service role key (server only) |
+| `DATABASE_URL` | Neon pooled connection string (server only) |
 | `STRAVA_CLIENT_ID` | Strava API application client ID |
 | `STRAVA_CLIENT_SECRET` | Strava API application client secret |
 | `STRAVA_WEBHOOK_VERIFY_TOKEN` | Shared secret for webhook verification (default: `strava-turf-war-webhook-secret`) |
@@ -124,7 +117,7 @@ curl -X POST https://www.strava.com/api/v3/push_subscriptions \
 
 ## Common tasks
 
-**Add a new migration**: create `supabase/migrations/00N_description.sql`, run in Supabase SQL Editor.
+**Change the schema**: edit `db/schema.sql` for fresh setups, and apply the change to the live database with `psql "$DATABASE_URL"` (or the Neon console SQL editor).
 
 **Test the webhook locally**: use the [Strava CLI](https://developers.strava.com/docs/webhooks/) or manually POST to `localhost:3000/api/webhooks/strava` with a fake payload.
 

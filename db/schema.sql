@@ -1,4 +1,15 @@
--- Enable PostGIS extension for geospatial support
+-- ============================================================
+-- strava-turf-war — Neon Postgres schema
+-- Apply with: psql "$DATABASE_URL" -f db/schema.sql
+--
+-- Consolidated from the former supabase/migrations/001–003. Row Level
+-- Security and the two RPC functions were dropped in the move to Neon: the app
+-- only reaches the database from server code using the owner connection
+-- string (lib/db.ts), so there is no public API for RLS to guard, and nothing
+-- called the RPCs.
+-- ============================================================
+
+-- PostGIS for geospatial support
 create extension if not exists postgis;
 
 -- ============================================================
@@ -47,22 +58,3 @@ create table territories (
 -- Spatial indexes for fast overlap / intersection queries
 create index territories_polygon_idx on territories using gist(polygon);
 create index rides_route_idx         on rides     using gist(route);
-
--- ============================================================
--- ROW LEVEL SECURITY
--- ============================================================
-alter table users       enable row level security;
-alter table rides       enable row level security;
-alter table territories enable row level security;
-
--- Users: everyone can read profiles; each user writes only their own row
-create policy "users_read_all"  on users for select using (true);
-create policy "users_write_own" on users for all    using (auth.uid()::text = id::text);
-
--- Rides: public read (service role handles writes via webhook)
-create policy "rides_read_all"  on rides for select using (true);
-
--- Territories: public read (service role handles writes via webhook)
-create policy "territories_read_all" on territories for select using (true);
-
--- NOTE: The webhook API route uses the service-role key which bypasses RLS entirely.

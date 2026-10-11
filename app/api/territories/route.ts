@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server'
-import { createServiceClient } from '@/lib/supabase/service'
+import { db } from '@/lib/db'
 
 /**
  * GET /api/territories
@@ -7,23 +7,25 @@ import { createServiceClient } from '@/lib/supabase/service'
  * Each feature carries user_color and user_name properties for the map.
  */
 export async function GET() {
-  const supabase = createServiceClient()
+  const sql = db()
 
-  const { data, error } = await supabase
-    .from('territories')
-    .select(`
-      id,
-      polygon,
-      area_sqm,
-      captured_at,
-      users (
-        id,
-        display_name,
-        color
-      )
-    `)
-
-  if (error) {
+  let data
+  try {
+    // Polygon comes back as a GeoJSON object and the owner as a nested
+    // `users` object — the same shape the old Supabase embedded select gave.
+    data = await sql`
+      select
+        t.id,
+        ST_AsGeoJSON(t.polygon)::json as polygon,
+        t.area_sqm,
+        to_json(t.captured_at)        as captured_at,
+        case when u.id is null then null
+             else json_build_object('id', u.id, 'display_name', u.display_name, 'color', u.color)
+        end                           as users
+      from territories t
+      left join users u on u.id = t.user_id
+    `
+  } catch (error) {
     console.error('territories fetch error:', error)
     return NextResponse.json(
       { error: 'Failed to fetch territories' },

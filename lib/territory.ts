@@ -103,10 +103,10 @@ export function findStolenTerritories(
 }
 
 /**
- * Convert a PostGIS GeoJSON polygon feature (from Supabase) into a Turf feature.
- * Supabase returns geometry columns as GeoJSON strings or objects.
+ * Convert a PostGIS geometry selected as GeoJSON (`ST_AsGeoJSON(...)::json`)
+ * into a Turf feature. Accepts a GeoJSON string or an already-parsed object.
  */
-export function parseSupabasePolygon(
+export function parseGeoJSONPolygon(
   raw: string | object
 ): Feature<Polygon> | null {
   try {

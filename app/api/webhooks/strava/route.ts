@@ -1,13 +1,13 @@
 import { NextRequest, NextResponse } from 'next/server'
 import polyline from '@mapbox/polyline'
-import { createServiceClient } from '@/lib/supabase/service'
+import { db } from '@/lib/db'
 import { refreshStravaToken, getStravaActivity } from '@/lib/strava'
 import {
   extractTerritoryPolygons,
   findStolenTerritories,
   coordsToWKTLineString,
   polygonToWKT,
-  parseSupabasePolygon,
+  parseGeoJSONPolygon,
 } from '@/lib/territory'
 import type { Feature, Polygon } from 'geojson'
 
@@ -69,14 +69,14 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: 'Missing fields' }, { status: 400 })
   }
 
-  const supabase = createServiceClient()
+  const sql = db()
 
   // Look up user by Strava athlete ID
-  const { data: user } = await supabase
-    .from('users')
-    .select('id, access_token, refresh_token, token_expires_at')
-    .eq('strava_athlete_id', stravaAthleteId)
-    .single()
+  const [user] = await sql`
+    select id, access_token, refresh_token, token_expires_at
+    from users
+    where strava_athlete_id = ${stravaAthleteId}
+  `
 
   if (!user) {
     // Athlete hasn't connected via our app — ignore
@@ -113,21 +113,24 @@ export async function POST(request: NextRequest) {
 
   // Store the ride
   const wktLine = coordsToWKTLineString(coords)
-  const { data: ride } = await supabase
-    .from('rides')
-    .upsert(
-      {
-        strava_activity_id: activityId,
-        user_id: user.id,
-        name: activity.name,
-        distance_meters: activity.distance,
-        start_date: activity.start_date,
-        route: `SRID=4326;${wktLine}`,
-      },
-      { onConflict: 'strava_activity_id' }
+  const [ride] = await sql`
+    insert into rides (strava_activity_id, user_id, name, distance_meters, start_date, route)
+    values (
+      ${activityId},
+      ${user.id},
+      ${activity.name},
+      ${activity.distance},
+      ${activity.start_date},
+      ${`SRID=4326;${wktLine}`}::geometry
     )
-    .select('id')
-    .single()
+    on conflict (strava_activity_id) do update set
+      user_id         = excluded.user_id,
+      name            = excluded.name,
+      distance_meters = excluded.distance_meters,
+      start_date      = excluded.start_date,
+      route           = excluded.route
+    returning id
+  `
 
   // Compute territory polygons
   const newPolygons = extractTerritoryPolygons(coords)
@@ -137,15 +140,14 @@ export async function POST(request: NextRequest) {
   }
 
   // Load all existing territories for overlap checking
-  const { data: existingRows } = await supabase
-    .from('territories')
-    .select('id, polygon')
+  const existingRows = (await sql`
+    select id, ST_AsGeoJSON(polygon)::json as polygon
+    from territories
+  `) as { id: string; polygon: unknown }[]
 
-  const existingTerritories: { id: string; polygon: Feature<Polygon> }[] = (
-    existingRows ?? []
-  )
-    .map((row: { id: string; polygon: unknown }) => {
-      const parsed = parseSupabasePolygon(row.polygon as string | object)
+  const existingTerritories: { id: string; polygon: Feature<Polygon> }[] = existingRows
+    .map((row) => {
+      const parsed = parseGeoJSONPolygon(row.polygon as string | object)
       if (!parsed) return null
       return { id: row.id, polygon: parsed }
     })
@@ -159,16 +161,20 @@ export async function POST(request: NextRequest) {
 
     // Delete stolen territories
     if (stolenIds.length > 0) {
-      await supabase.from('territories').delete().in('id', stolenIds)
+      await sql`delete from territories where id = any(${stolenIds}::uuid[])`
     }
 
     // Insert the new territory
     const wktPolygon = polygonToWKT(newPoly)
-    const { error: insertError } = await supabase.from('territories').insert({
-      user_id: user.id,
-      polygon: `SRID=4326;${wktPolygon}`,
-      source_ride_id: ride?.id ?? null,
-    })
+    let insertError: unknown = null
+    try {
+      await sql`
+        insert into territories (user_id, polygon, source_ride_id)
+        values (${user.id}, ${`SRID=4326;${wktPolygon}`}::geometry, ${ride?.id ?? null})
+      `
+    } catch (err) {
+      insertError = err
+    }
 
     if (!insertError) {
       territoriesAdded++
